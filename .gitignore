@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+pip-log.txt
+pip-delete-this-directory.txt
+
+.env
+
+faiss_index/
+
+pdf_files/
+
+.idea/
+*.iml
