@@ -15,9 +15,9 @@ services:
   db:
     image: postgres:13
     environment:
-      POSTGRES_DB: knowledge_bot
-      POSTGRES_USER: bot_user
-      POSTGRES_PASSWORD: secure_password
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
