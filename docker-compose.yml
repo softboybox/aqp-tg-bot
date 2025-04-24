@@ -13,7 +13,7 @@ services:
       - ./pdf_files:/pdf_files
       - ./faiss_index:/app/faiss_index
   db:
-    image: postgres:13
+    image: postgres:17
     environment:
       POSTGRES_DB: ${DB_NAME}
       POSTGRES_USER: ${DB_USER}
