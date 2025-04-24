@@ -1,0 +1,26 @@
+version: '3.8'
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    depends_on:
+      - db
+    restart: unless-stopped
+    volumes:
+      - ./pdf_files:/pdf_files
+      - ./faiss_index:/app/faiss_index
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: knowledge_bot
+      POSTGRES_USER: bot_user
+      POSTGRES_PASSWORD: secure_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    restart: unless-stopped
+volumes:
+  postgres_data:
