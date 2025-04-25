@@ -40,8 +40,13 @@
    PDF_FILES_PATH=/pdf_files
    FAISS_INDEX_PATH=/app/faiss_index
    LC_CHAT_HISTORY_TABLE_NAME=langchain_chat_history
+   ADMIN_PASSWORD=your_admin_password
 
         
 5. **Запустите приложение:**
    ```bash
    docker-compose up -d
+
+6. **После команды ниже в боте можно пройти авторизацию:**
+   ```bash
+   /login
