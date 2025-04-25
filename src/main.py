@@ -1,10 +1,12 @@
 from src.bot.telegram_bot import TelegramBot
 from src.config.settings import settings
 from src.knowledge_base.knowledge_service import ColabKnowledgeService
+from src.auth.auth_service import PostgresAuthService
 
 def main():
     knowledge_service = ColabKnowledgeService()
-    bot = TelegramBot(settings.TELEGRAM_TOKEN, knowledge_service)
+    auth_service = PostgresAuthService()
+    bot = TelegramBot(settings.TELEGRAM_TOKEN, knowledge_service, auth_service)
     bot.run()
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from langchain.chains import create_history_aware_retriever, create_retrieval_ch
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_postgres import PostgresChatMessageHistory
+from src.prompt.prompt_service import PromptService, PostgresPromptService
 from src.config.settings import settings
 
 
@@ -22,10 +23,16 @@ class KnowledgeService(ABC):
     def process_query(self, query: str, session_id: str) -> str:
         pass
 
+    @abstractmethod
+    def update_prompt(self, new_prompt: str) -> bool:
+        pass
+
 class AQPAssistant:
-    def __init__(self, file_path, system_prompt):
+    def __init__(self, file_path, prompt_service: PromptService):
         os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
         self.retriever = self.vectorize_content(file_path)
+        self.prompt_service = prompt_service
+        system_prompt = self.prompt_service.get_current_prompt()
         self.llm, self.history_aware_retriever = self.initialize_history_aware_retriever(self.retriever)
         self.rag_chain = self.create_rag_chain(self.llm, self.history_aware_retriever, system_prompt)
         self.conversational_rag_chain = self.create_conversational_rag_chain(self.rag_chain)
@@ -63,7 +70,6 @@ class AQPAssistant:
         return db.as_retriever()
 
     def initialize_history_aware_retriever(self, retriever):
-
         contextualize_q_system_prompt = (
             "Given a chat history and the latest user question "
             "which might reference context in the chat history, "
@@ -122,49 +128,21 @@ class AQPAssistant:
         )
         return result["answer"]
 
+    def update_prompt(self, new_prompt: str) -> bool:
+        if self.prompt_service.update_prompt(new_prompt):
+            system_prompt = self.prompt_service.get_current_prompt()
+            self.rag_chain = self.create_rag_chain(self.llm, self.history_aware_retriever, system_prompt)
+            self.conversational_rag_chain = self.create_conversational_rag_chain(self.rag_chain)
+            return True
+        return False
+
 class ColabKnowledgeService(KnowledgeService):
     def __init__(self):
-        system_prompt = """
-        Цей GPT є консультантом з хімії для басейнів і спеціалізується на підборі
-        продукції бренду AquaDoctor (https://aquadoctor.ua).
-        Він допомагає користувачам визначити необхідні засоби для догляду за басейном
-        з урахуванням того, що середній сезон користування триває 3 місяці.
-        Відповіді включають точні розрахунки кількості хімії, що базуються на обсягах
-        фасування, доступних на сайті виробника, щоб забезпечити оптимальний вибір
-        продукції без надлишків або нестачі. GPT перевіряє всі доступні фасування і
-        пропонує найоптимальнішу (найвигіднішу та найвідповіднішу) упаковку продукції з
-        Aquapolis. Якщо потрібно, GPT комбінує фасування — наприклад, якщо потрібно 6 кг,
-        а є фасування 5 кг і 1 кг, то рекомендує їх разом.
-
-        Перед тим, як підібрати хімію, GPT спочатку ставить два основні питання:
-        1) "Щоб підібрати потрібну хімію AquaDoctor для вашого басейну, уточніть,
-        будь ласка: Розміри басейну (довжина × ширина × глибина або діаметр × глибина,
-        якщо басейн круглий)."
-        2) "Яка хімія потрібна? Весь набір для догляду впродовж сезону? Чи потрібна хімія
-         для чогось конкретного? (шокова обробка, підтримка чистоти, коригування рівня pH,
-         альгіцид від водоростей, коагулянт для прозорості тощо)."
-
-        Якщо користувач вказав розмір басейну у форматі "360 на 200", GPT уточнює:
-        "Чи правильно я розумію, що у вас круглий басейн?" Якщо басейн не круглий,
-        то додатково запитує глибину для точних розрахунків.
-        Розрахунок об'єму завжди ведеться з урахуванням того, що рівень води на 20 см
-        нижче від загальної висоти басейну. GPT не запитує про наявність системи фільтрації.
-
-        Якщо користувач вибирає набір хімії на сезон (3 місяці), GPT включає у рекомендацію препарати для:
-        - Шокової обробки (з розрахунку кожні 2 тижні протягом сезону).
-        - Підтримання чистоти води.
-
-        Загальна порада: При температурі вище +35°C: вся хімія має застосовуватись
-        частіше або в трохи підвищених дозах, але не більше ніж на 20–25% від стандарту, щоб не перенаситити воду.
-
-        Якщо користувач питає, де купити продукцію або зазначає, що хоче придбати хімію для басейну, GPT рекомендує лише Aquapolis.ua як перевірений магазин.
-
-        Також користувач може отримати консультацію за телефоном 0800300144.
-        Твої відповіді не повинні перевищувати 400 слів.
-
-        {context}
-        """
-        self.assistant = AQPAssistant(settings.PDF_FILES_PATH, system_prompt)
+        self.prompt_service = PostgresPromptService()
+        self.assistant = AQPAssistant(settings.PDF_FILES_PATH, self.prompt_service)
 
     def process_query(self, query: str, session_id: str) -> str:
         return self.assistant.chat(query, session_id)
+
+    def update_prompt(self, new_prompt: str) -> bool:
+        return self.assistant.update_prompt(new_prompt)
