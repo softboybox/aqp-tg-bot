@@ -4,7 +4,6 @@ services:
     image: spunchadmin/aqp_tg_bot:dev
     depends_on:
       - db
-    restart: always
     volumes:
       - ./pdf_files:/pdf_files
       - ./faiss_index:/app/faiss_index
