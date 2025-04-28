@@ -8,10 +8,12 @@ services:
       - .env
     depends_on:
       - db
-    restart: unless-stopped
+    restart: always
     volumes:
       - ./pdf_files:/pdf_files
       - ./faiss_index:/app/faiss_index
+    networks:
+      - mainnet
   db:
     image: postgres:17
     environment:
@@ -22,5 +24,14 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./db/scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
     restart: unless-stopped
+    ports:
+      - "5432:5432"
+    networks:
+      - mainnet
+
 volumes:
   postgres_data:
+
+networks:
+  mainnet:
+    driver: bridge

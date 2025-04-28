@@ -11,7 +11,5 @@ pip-delete-this-directory.txt
 
 faiss_index/
 
-pdf_files/
-
 .idea/
 *.iml
