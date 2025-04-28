@@ -15,6 +15,7 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 
 COPY ./db /app/db
 COPY ./src /app/src
+COPY ./pdf_files /app/pdf_files
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
