@@ -36,6 +36,7 @@ jobs:
             
             # Create project directory if it doesn't exist
             mkdir -p ~/aqp-tg-bot
+            mkdir -p ~/aqp-tg-bot/db/scripts
             
             # Stop running containers
             cd ~/aqp-tg-bot
@@ -50,7 +51,7 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "docker-compose.yml,.env"
+          source: "docker-compose.yml,.env,db/scripts/init_db.sql"
           target: "~/aqp-tg-bot"
           strip_components: 0
       
