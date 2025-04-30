@@ -1,5 +1,5 @@
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-from src.bot.handlers import start, handle_message, login, change_prompt
+from src.bot.handlers import start, handle_message, login, change_prompt, clear_history
 from src.knowledge_base.knowledge_service import KnowledgeService
 from src.auth.auth_service import AuthService, PostgresAuthService
 
@@ -15,6 +15,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("start", start))
         self.app.add_handler(CommandHandler("login", login))
         self.app.add_handler(CommandHandler("change_prompt", change_prompt))
+        self.app.add_handler(CommandHandler("clear_history", clear_history))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     def run(self):
