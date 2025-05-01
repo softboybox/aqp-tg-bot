@@ -1,8 +1,10 @@
+from functools import wraps
 from telegram import Update
 from telegram.ext import ContextTypes, CallbackContext
 from src.auth.auth_service import AuthService
 
-async def admin_required(handler):
+def admin_required(handler):
+    @wraps(handler)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         auth_service: AuthService = context.bot_data["auth_service"]
         telegram_id = update.effective_user.id

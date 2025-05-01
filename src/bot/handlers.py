@@ -53,10 +53,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query == "Переглянути промт":
         prompt_service = PostgresPromptService()
         current_prompt = prompt_service.get_current_prompt()
-        # Ограничиваем длину для Telegram (4096 символов)
         display_prompt = current_prompt[:4000] + ("..." if len(current_prompt) > 4000 else "")
         reply_keyboard = [
-            [KeyboardButton("Редагувати промт"), KeyboardButton("Повернутися до помічника")]
+            [KeyboardButton("Редагувати промт"), KeyboardButton("Переглянути промт")],
+            [KeyboardButton("Повернутися до помічника"), KeyboardButton("Очистити історію")]
         ]
         await update.message.reply_text(
             f"Поточний промт:\n\n{display_prompt}",
@@ -64,11 +64,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Обработка кнопки "Очистити історію"
+    if query == "Очистити історію":
+        logger.info(f"Calling clear_history for user {user_id}")
+        await clear_history(update, context)
+        return
+
     if context.user_data.get(BotState.AWAITING_PASSWORD.value):
         if auth_service.login(user_id, query):
             context.user_data.clear()
+            logger.info(f"User {user_id} logged in as admin: {auth_service.is_admin(user_id)}")
             reply_keyboard = [
-                [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт"), KeyboardButton("Переглянути промт")]
+                [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт")],
+                [KeyboardButton("Переглянути промт"), KeyboardButton("Очистити історію")]
             ]
             await update.message.reply_text(
                 "Авторизація успішна! Ви отримали права адміністратора.",
@@ -92,7 +100,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if knowledge_service.update_prompt(formatted_prompt):
                 context.user_data.clear()
                 reply_keyboard = [
-                    [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт"), KeyboardButton("Переглянути промт")]
+                    [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт")],
+                    [KeyboardButton("Переглянути промт"), KeyboardButton("Очистити історію")]
                 ]
                 await update.message.reply_text(
                     "Промт успішно оновлено!",
@@ -114,8 +123,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if auth_service.is_authorized(user_id) and auth_service.is_admin(user_id):
+        logger.info(f"User {user_id} is admin: {auth_service.is_admin(user_id)}")
         reply_keyboard = [
-            [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт"), KeyboardButton("Переглянути промт")]
+            [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт")],
+            [KeyboardButton("Переглянути промт"), KeyboardButton("Очистити історію")]
         ]
         await update.message.reply_text(
             "Будь ласка, оберіть дію:",
@@ -151,14 +162,19 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         context.user_data[BotState.AWAITING_PASSWORD.value] = True
-        await update.message.reply_text("Будь ласка, вкажіть пароль:")
+        await update.message.reply_text(
+            "Будь ласка, вкажіть пароль:",
+            reply_markup=ReplyKeyboardRemove()
+        )
         return
     password = args[0]
     auth_service: AuthService = context.bot_data["auth_service"]
     if auth_service.login(telegram_id, password):
         context.user_data.clear()
+        logger.info(f"User {telegram_id} logged in as admin: {auth_service.is_admin(telegram_id)}")
         reply_keyboard = [
-            [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт"), KeyboardButton("Переглянути промт")]
+            [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт")],
+            [KeyboardButton("Переглянути промт"), KeyboardButton("Очистити історію")]
         ]
         await update.message.reply_text(
             "Авторизація успішна! Ви отримали права адміністратора.",
@@ -175,3 +191,28 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_required
 async def change_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _request_new_prompt(update, context)
+
+@admin_required
+async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"telegram-user-{user_id}")
+    logger.info(f"Clearing history for user {user_id} with session_id {session_id}")
+
+    try:
+        knowledge_service: KnowledgeService = context.bot_data["knowledge_service"]
+        conn = knowledge_service.assistant.postgres_conn
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM langchain_chat_history WHERE session_id = %s",
+            (session_id,)
+        )
+        deleted_rows = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        logger.info(f"History cleared for user {user_id}, deleted {deleted_rows} rows")
+
+        await update.message.reply_text("Історія успішно видалена!")
+        await start(update, context)
+    except Exception as e:
+        logger.error(f"Failed to clear history for user {user_id}: {e}")
+        await update.message.reply_text("Вибачте, сталася помилка. Спробуйте ще раз.")
