@@ -53,3 +53,30 @@ class PostgresPromptService(PromptService):
             return False
         finally:
             self.db.close()
+
+    def sync_initial_prompt(self) -> bool:
+
+        try:
+            conn = self.db.connect()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO system_prompts (prompt_text, created_at, updated_at)
+                    VALUES (%s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (id)
+                    DO UPDATE SET
+                        prompt_text = EXCLUDED.prompt_text,
+                        updated_at = CURRENT_TIMESTAMP
+                    RETURNING id
+                    """,
+                    (settings.INITIAL_SYSTEM_PROMPT,)
+                )
+                result = cur.fetchone()
+                conn.commit()
+                logger.info("Initial system prompt synced to database")
+                return result is not None
+        except Exception as e:
+            logger.error(f"Error syncing initial prompt: {e}")
+            return False
+        finally:
+            self.db.close()
