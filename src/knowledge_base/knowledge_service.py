@@ -86,7 +86,7 @@ class AQPAssistant:
             ]
         )
 
-        llm = ChatOpenAI(model="gpt-4o", max_tokens=700, temperature=0.2)
+        llm = ChatOpenAI(model="gpt-4.1-2025-04-14", max_tokens=1024, temperature=0.2)
         history_aware_retriever = create_history_aware_retriever(
             llm, retriever, contextualize_q_prompt
         )
