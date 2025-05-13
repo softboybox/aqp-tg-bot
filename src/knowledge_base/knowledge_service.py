@@ -60,7 +60,7 @@ class AQPAssistant:
             if not pages:
                 logger.error("No PDF files found in %s", file_path)
                 raise ValueError("No PDF files available to create FAISS index")
-            text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=10)
+            text_splitter = CharacterTextSplitter(chunk_size=1500, chunk_overlap=100)
             docs_splitted = text_splitter.split_documents(pages)
             embeddings = OpenAIEmbeddings()
             db = FAISS.from_documents(docs_splitted, embeddings)
@@ -86,7 +86,7 @@ class AQPAssistant:
             ]
         )
 
-        llm = ChatOpenAI(model="gpt-4.1-2025-04-14", max_tokens=1024, temperature=0.2)
+        llm = ChatOpenAI(model="gpt-4.1-2025-04-14", max_tokens=1024, temperature=0)
         history_aware_retriever = create_history_aware_retriever(
             llm, retriever, contextualize_q_prompt
         )
