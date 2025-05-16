@@ -11,6 +11,7 @@ from src.prompt.prompt_service import PostgresPromptService
 
 logger = logging.getLogger(__name__)
 
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     auth_service: AuthService = context.bot_data["auth_service"]
@@ -21,13 +22,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardRemove()
     )
 
+
 async def _request_new_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Requesting new prompt from user {update.effective_user.id}")
     context.user_data[BotState.AWAITING_PROMPT.value] = True
+    context.user_data["prompt_parts"] = []  # Инициализируем список для хранения частей промта
     await update.message.reply_text(
-        "Будь ласка, введіть новий промт:",
-        reply_markup=ReplyKeyboardRemove()
+        "Будь ласка, введіть новий промт (якщо промт довгий, відправляйте його частинами послідовно):",
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton("Зберегти промт")], [KeyboardButton("Скасувати")]],
+            one_time_keyboard=True,
+            resize_keyboard=True
+        )
     )
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -53,13 +61,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query == "Переглянути промт":
         prompt_service = PostgresPromptService()
         current_prompt = prompt_service.get_current_prompt()
-        display_prompt = current_prompt[:4000] + ("..." if len(current_prompt) > 4000 else "")
         reply_keyboard = [
             [KeyboardButton("Редагувати промт"), KeyboardButton("Переглянути промт")],
             [KeyboardButton("Повернутися до помічника"), KeyboardButton("Очистити історію")]
         ]
+        if len(current_prompt) > 4000:
+            parts = [current_prompt[i:i + 4000] for i in range(0, len(current_prompt), 4000)]
+            for part in parts:
+                await update.message.reply_text(f"Частина промпту:\n\n{part}")
+        else:
+            await update.message.reply_text(f"Поточний промт:\n\n{current_prompt}")
         await update.message.reply_text(
-            f"Поточний промт:\n\n{display_prompt}",
+            "Оберіть дію:",
             reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
         return
@@ -91,35 +104,86 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+    # Обработка режима сбора многочастного промта
     if context.user_data.get(BotState.AWAITING_PROMPT.value):
-        formatted_prompt = f'"""\n{query}\n"""'
-        if "{context}" not in query:
-            formatted_prompt = f'"""\n{query}\n{{context}}\n"""'
-        knowledge_service: KnowledgeService = context.bot_data["knowledge_service"]
-        try:
-            if knowledge_service.update_prompt(formatted_prompt):
-                context.user_data.clear()
-                reply_keyboard = [
-                    [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт")],
-                    [KeyboardButton("Переглянути промт"), KeyboardButton("Очистити історію")]
-                ]
+        # Если получена команда сохранения промта
+        if query == "Зберегти промт":
+            prompt_parts = context.user_data.get("prompt_parts", [])
+            if not prompt_parts:
                 await update.message.reply_text(
-                    "Промт успішно оновлено!",
-                    reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+                    "Немає жодної частини промту для збереження. Будь ласка, спочатку введіть промт.",
+                    reply_markup=ReplyKeyboardMarkup(
+                        [[KeyboardButton("Скасувати")]],
+                        one_time_keyboard=True,
+                        resize_keyboard=True
+                    )
                 )
-            else:
+                return
+
+            # Собираем все части промта в один
+            complete_prompt = "\n".join(prompt_parts)
+
+            # Форматируем промт и добавляем {context} если отсутствует
+            formatted_prompt = f'"""\n{complete_prompt}\n"""'
+            if "{context}" not in complete_prompt:
+                formatted_prompt = f'"""\n{complete_prompt}\n{{context}}\n"""'
+
+            knowledge_service: KnowledgeService = context.bot_data["knowledge_service"]
+            try:
+                if knowledge_service.update_prompt(formatted_prompt):
+                    context.user_data.clear()
+                    reply_keyboard = [
+                        [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт")],
+                        [KeyboardButton("Переглянути промт"), KeyboardButton("Очистити історію")]
+                    ]
+                    await update.message.reply_text(
+                        "Промт успішно оновлено!",
+                        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+                    )
+                else:
+                    reply_keyboard = [[KeyboardButton("Повернутися до помічника")]]
+                    await update.message.reply_text(
+                        "Помилка при оновленні промпта. Перевірте формат промпта і спробуйте ще раз.",
+                        reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
+                    )
+            except Exception as e:
+                logger.error(f"Failed to update prompt for user {user_id}: {e}")
                 reply_keyboard = [[KeyboardButton("Повернутися до помічника")]]
                 await update.message.reply_text(
-                    "Помилка при оновленні промпта. Перевірте формат промпта і спробуйте ще раз.",
+                    f"Виникла помилка при оновленні промпта: {str(e)}. Спробуйте ще раз.",
                     reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
                 )
-        except Exception as e:
-            logger.error(f"Failed to update prompt for user {user_id}: {e}")
-            reply_keyboard = [[KeyboardButton("Повернутися до помічника")]]
+            return
+
+        # Если получена команда отмены
+        if query == "Скасувати":
+            context.user_data.clear()
+            reply_keyboard = [
+                [KeyboardButton("Повернутися до помічника"), KeyboardButton("Редагувати промт")],
+                [KeyboardButton("Переглянути промт"), KeyboardButton("Очистити історію")]
+            ]
             await update.message.reply_text(
-                f"Виникла помилка при оновленні промпта: {str(e)}. Спробуйте ще раз.",
+                "Редагування промту скасовано.",
                 reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
             )
+            return
+
+        # Добавляем часть промта в список и продолжаем сбор
+        if "prompt_parts" not in context.user_data:
+            context.user_data["prompt_parts"] = []
+
+        context.user_data["prompt_parts"].append(query)
+
+        # Показываем сколько частей уже получено
+        parts_count = len(context.user_data["prompt_parts"])
+        await update.message.reply_text(
+            f"Отримано частину промту #{parts_count}. Продовжуйте вводити наступну частину або натисніть 'Зберегти промт', якщо всі частини введено.",
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton("Зберегти промт")], [KeyboardButton("Скасувати")]],
+                one_time_keyboard=True,
+                resize_keyboard=True
+            )
+        )
         return
 
     if auth_service.is_authorized(user_id) and auth_service.is_admin(user_id):
@@ -157,6 +221,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error processing query for user {user_id}: {e}")
         await update.message.reply_text("Вибачте, сталася помилка. Спробуйте ще раз.")
 
+
 async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     telegram_id = update.effective_user.id
     args = context.args
@@ -188,9 +253,11 @@ async def login(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True)
         )
 
+
 @admin_required
 async def change_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _request_new_prompt(update, context)
+
 
 @admin_required
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
