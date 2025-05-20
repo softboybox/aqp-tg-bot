@@ -50,7 +50,6 @@ class PostgresPromptService(PromptService):
     def update_prompt(self, new_prompt: str) -> bool:
         logger.info(f"Updating prompt: {new_prompt[:100]}... (length: {len(new_prompt)})")
         try:
-            # Проверяем валидность промта перед сохранением
             if not self.validate_prompt(new_prompt):
                 logger.error("Prompt validation failed")
                 return False
@@ -81,21 +80,16 @@ class PostgresPromptService(PromptService):
             self.db.close()
 
     def validate_prompt(self, prompt: str) -> bool:
-
-        # Проверка на пустой промт
         if not prompt or prompt.strip() == '"""':
             logger.error("Empty prompt")
             return False
 
-        # Проверка на наличие {context}
         if "{context}" not in prompt:
             logger.warning("Prompt doesn't contain {context} placeholder")
-            # Это не критическая ошибка, т.к. мы добавляем {context} автоматически если его нет
 
         # Проверка на правильное форматирование с тройными кавычками
         if not (prompt.strip().startswith('"""') and prompt.strip().endswith('"""')):
             logger.warning("Prompt doesn't have proper triple quotes formatting")
-            # Это не критическая ошибка, т.к. мы добавляем форматирование автоматически
 
         return True
 
