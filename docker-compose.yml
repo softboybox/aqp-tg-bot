@@ -5,7 +5,6 @@ services:
     depends_on:
       - db
     volumes:
-      - ./csv_files:/app/csv_files
       - ./faiss_index:/app/faiss_index
     networks:
       - mainnet
