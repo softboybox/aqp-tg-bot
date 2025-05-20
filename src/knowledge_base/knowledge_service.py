@@ -36,6 +36,10 @@ class KnowledgeService(ABC):
     @abstractmethod
     def update_prompt(self, new_prompt: str) -> bool:
         pass
+        
+    @abstractmethod
+    def clear_history(self, session_id: str) -> bool:
+        pass
 
 class AQPAssistant:
     def __init__(self, file_path, prompt_service: PromptService):
@@ -65,6 +69,10 @@ class AQPAssistant:
         
         self.postgres_conn = psycopg.connect(settings.LC_DATABASE_URL)
         self.postgres_table_name = settings.LC_CHAT_HISTORY_TABLE_NAME
+        
+        # Инициализируем _final_store, если его еще нет
+        if not hasattr(self, "_final_store"):
+            self._final_store = {}
 
     def vectorize_content(self, file_path):
         logger.info(f"Loading CSV from {file_path}")
@@ -200,6 +208,32 @@ class AQPAssistant:
             
             return True
         return False
+        
+    def clear_history(self, session_id: str) -> bool:
+        try:
+            cursor = self.postgres_conn.cursor()
+            cursor.execute(
+                "DELETE FROM langchain_chat_history WHERE session_id = %s",
+                (session_id,)
+            )
+            deleted_rows = cursor.rowcount
+            self.postgres_conn.commit()
+            cursor.close()
+            
+            if hasattr(self, "_final_store"):
+                if session_id in self._final_store:
+                    self._final_store[session_id] = ChatMessageHistory()
+                    logger.info(f"In-memory history cleared for session_id {session_id}")
+                
+                if "final_answer_chain" in self._final_store:
+                    self._final_store["final_answer_chain"] = ChatMessageHistory()
+                    logger.info("In-memory history cleared for final_answer_chain")
+            
+            logger.info(f"History cleared from database: {deleted_rows} rows")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear history for session_id {session_id}: {e}")
+            return False
 
 class ColabKnowledgeService(KnowledgeService):
     def __init__(self):
@@ -211,3 +245,6 @@ class ColabKnowledgeService(KnowledgeService):
 
     def update_prompt(self, new_prompt: str) -> bool:
         return self.assistant.update_prompt(new_prompt)
+        
+    def clear_history(self, session_id: str) -> bool:
+        return self.assistant.clear_history(session_id)
