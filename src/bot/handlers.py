@@ -262,24 +262,18 @@ async def change_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @admin_required
 async def clear_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    session_id = uuid.uuid5(uuid.NAMESPACE_DNS, f"telegram-user-{user_id}")
+    session_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"telegram-user-{user_id}"))
     logger.info(f"Clearing history for user {user_id} with session_id {session_id}")
 
     try:
         knowledge_service: KnowledgeService = context.bot_data["knowledge_service"]
-        conn = knowledge_service.assistant.postgres_conn
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM langchain_chat_history WHERE session_id = %s",
-            (session_id,)
-        )
-        deleted_rows = cursor.rowcount
-        conn.commit()
-        cursor.close()
-        logger.info(f"History cleared for user {user_id}, deleted {deleted_rows} rows")
-
-        await update.message.reply_text("Історія успішно видалена!")
-        await start(update, context)
+        if knowledge_service.clear_history(session_id):
+            logger.info(f"History cleared for user {user_id}")
+            await update.message.reply_text("Історія успішно видалена!")
+            await start(update, context)
+        else:
+            logger.error(f"Failed to clear history for user {user_id}")
+            await update.message.reply_text("Вибачте, сталася помилка при очищенні історії. Спробуйте ще раз.")
     except Exception as e:
         logger.error(f"Failed to clear history for user {user_id}: {e}")
         await update.message.reply_text("Вибачте, сталася помилка. Спробуйте ще раз.")
