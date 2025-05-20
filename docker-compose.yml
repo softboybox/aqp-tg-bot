@@ -5,7 +5,7 @@ services:
     depends_on:
       - db
     volumes:
-      - ./pdf_files:/pdf_files
+      - ./csv_files:/app/csv_files
       - ./faiss_index:/app/faiss_index
     networks:
       - mainnet
@@ -17,7 +17,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
-      - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+      - ./db/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
     restart: unless-stopped
     ports:
       - "5432:5432"
