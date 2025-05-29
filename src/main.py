@@ -1,7 +1,7 @@
 import os
 from src.bot.telegram_bot import TelegramBot
 from src.config.settings import settings
-from src.knowledge_base.knowledge_service_optimized_fixed import OptimizedColabKnowledgeService
+from src.knowledge_base.knowledge_service import OptimizedColabKnowledgeService
 from src.auth.auth_service import PostgresAuthService
 from src.prompt.prompt_service import PostgresPromptService
 import logging
