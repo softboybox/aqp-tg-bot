@@ -8,13 +8,13 @@ from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_postgres import PostgresChatMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
-from langchain_core.retrievers import BaseRetriever
-from langchain_core.documents import Document
+from langchain_core.chat_history import BaseChatMessageHistory
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from typing import List
 from src.prompt.prompt_service import PromptService, PostgresPromptService
 from src.config.settings import settings
 
@@ -22,13 +22,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_LENGTH = 4000
-
-class EmptyRetriever(BaseRetriever):
-    def _get_relevant_documents(self, query, *, run_manager=None, **kwargs):
-        return []
-
-    async def _aget_relevant_documents(self, query, *, run_manager=None, **kwargs):
-        return []
 
 
 class KnowledgeService(ABC):
@@ -45,41 +38,132 @@ class KnowledgeService(ABC):
         pass
 
 
-class AQPAssistant:
+class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
+
+    def __init__(self, table_name: str, session_id: str, connection):
+        self.table_name = table_name
+        self.session_id = session_id
+        self.connection = connection
+
+    @property
+    def messages(self) -> List[BaseMessage]:
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute(
+                f"SELECT type, content FROM {self.table_name} WHERE session_id = %s ORDER BY created_at",
+                (self.session_id,)
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+
+            messages = []
+            for msg_type, content in rows:
+                if msg_type == 'human':
+                    messages.append(HumanMessage(content=content))
+                elif msg_type == 'ai':
+                    messages.append(AIMessage(content=content))
+
+            return messages
+        except Exception as e:
+            logger.warning(f"Failed to load messages: {e}")
+            return []
+
+    def add_message(self, message: BaseMessage) -> None:
+        try:
+            cursor = self.connection.cursor()
+            msg_type = 'human' if isinstance(message, HumanMessage) else 'ai'
+            cursor.execute(
+                f"INSERT INTO {self.table_name} (session_id, type, content) VALUES (%s, %s, %s)",
+                (self.session_id, msg_type, message.content)
+            )
+            self.connection.commit()
+            cursor.close()
+        except Exception as e:
+            logger.warning(f"Failed to add message: {e}")
+
+    def clear(self) -> None:
+        """Очистка истории для данной сессии"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute(
+                f"DELETE FROM {self.table_name} WHERE session_id = %s",
+                (self.session_id,)
+            )
+            self.connection.commit()
+            cursor.close()
+        except Exception as e:
+            logger.warning(f"Failed to clear messages: {e}")
+
+
+class OptimizedAQPAssistant:
+
     def __init__(self, file_path, prompt_service: PromptService):
         os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
         self.retriever = self.vectorize_content(file_path)
-        self.empty_retriever = EmptyRetriever()
-
         self.prompt_service = prompt_service
-        system_prompt = self.prompt_service.get_current_prompt()
-        self.products_prompt = settings.PRODUCTS_PROMPT
-        self.dosage_prompt = settings.DOSAGE_PROMPT
 
-        self.llm, self.history_aware_retriever = self.initialize_history_aware_retriever(self.retriever)
-        _, self.history_aware_retriever_limited = self.initialize_history_aware_retriever(self.empty_retriever)
+        self.unified_prompt = self.create_unified_prompt()
 
-        self.rag_chain_products = self.create_rag_chain(self.llm, self.history_aware_retriever, self.products_prompt)
-        self.rag_chain_dosage = self.create_rag_chain(self.llm, self.history_aware_retriever, self.dosage_prompt)
-        self.rag_chain_final_no_rag = self.create_rag_chain(self.llm, self.history_aware_retriever_limited, system_prompt)
-        self.rag_chain_final = self.create_rag_chain(self.llm, self.history_aware_retriever, system_prompt)
+        self.llm = ChatOpenAI(
+            model="chatgpt-4o-latest",
+            temperature=0,
+            max_retries=2,
+            request_timeout=120
+        )
+
+        self.rag_chain = self.create_simple_rag_chain()
 
         self.postgres_conn = psycopg.connect(settings.LC_DATABASE_URL)
         self.postgres_table_name = settings.LC_CHAT_HISTORY_TABLE_NAME
-        
+
+        self._ensure_table_exists()
+
+    def _ensure_table_exists(self):
         try:
-            PostgresChatMessageHistory.create_tables(self.postgres_conn, self.postgres_table_name)
+            cursor = self.postgres_conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS langchain_chat_history (
+                    id SERIAL PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    content TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_langchain_chat_history_session_id 
+                ON langchain_chat_history (session_id)
+            """)
+            self.postgres_conn.commit()
+            cursor.close()
             logger.info(f"PostgreSQL chat history table '{self.postgres_table_name}' ready")
         except Exception as e:
             logger.warning(f"Could not create chat history table: {e}")
 
-    def generate_session_uuid(self, base_session_id: str, session_type: str) -> str:
+    def create_unified_prompt(self):
+        """Создает ЕДИНЫЙ промпт, который выполняет всю логику за ОДИН запрос"""
+        base_prompt = self.prompt_service.get_current_prompt()
 
-        if session_type == "main":
-            return base_session_id
-        
-        namespace_uuid = uuid.UUID(base_session_id)
-        return str(uuid.uuid5(namespace_uuid, session_type))
+        unified_prompt = f"""
+        Ты експерт з хімії для басейнів і спеціалізуєшся на підборі продукції бренду AquaDoctor.
+
+        Твоя задача за ОДИН запит:
+        1. Визначити чи це питання про хімію для басейну
+        2. Якщо ТАК - підібрати потрібні препарати AquaDoctor (максимум 4)
+        3. Для кожного препарату знайти дозування та фасування з контексту
+        4. Дати повну відповідь з розрахунками
+
+        Якщо це НЕ питання про басейни/хімію - відповідай згідно базового промпта:
+        {base_prompt}
+
+        ВАЖЛИВО: Використовуй весь доступний контекст для пошуку інформації про продукти та їх дозування.
+        Не роби окремі запити - все має бути в одній відповіді!
+
+        Контекст з бази знань:
+        {{context}}
+        """
+
+        return unified_prompt
 
     def vectorize_content(self, file_path):
         logger.info(f"Loading CSV from {file_path}")
@@ -96,7 +180,7 @@ class AQPAssistant:
             embeddings = OpenAIEmbeddings()
             db = FAISS.from_documents(docs_splitted, embeddings)
             retriever = db.as_retriever(
-                search_type="mmr", search_kwargs={'k': 10, 'lambda_mult': 0.25})
+                search_type="mmr", search_kwargs={'k': 15, 'lambda_mult': 0.25})
 
             logger.info(f"Successfully loaded CSV and created retriever with {len(docs_splitted)} documents")
             return retriever
@@ -104,184 +188,88 @@ class AQPAssistant:
             logger.error(f"Error creating retriever from CSV: {e}")
             raise
 
-    def initialize_history_aware_retriever(self, retriever):
-        contextualize_q_system_prompt = (
-            "Given a chat history and the latest user question "
-            "which might reference context in the chat history, "
-            "formulate a standalone question which can be understood "
-            "without the chat history. Do NOT answer the question, "
-            "just reformulate it if needed and otherwise return it as is."
-        )
-
-        contextualize_q_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", contextualize_q_system_prompt),
-                MessagesPlaceholder("chat_history"),
-                ("human", "{input}"),
-            ]
-        )
-
-        llm = ChatOpenAI(model="chatgpt-4o-latest", temperature=0)
-        history_aware_retriever = create_history_aware_retriever(
-            llm, retriever, contextualize_q_prompt
-        )
-        return llm, history_aware_retriever
-
-    def create_rag_chain(self, llm, history_aware_retriever, system_prompt):
+    def create_simple_rag_chain(self):
         qa_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", system_prompt),
+                ("system", self.unified_prompt),
                 MessagesPlaceholder("chat_history"),
                 ("human", "{input}"),
             ]
         )
-        question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
-        rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+        question_answer_chain = create_stuff_documents_chain(self.llm, qa_prompt)
+        rag_chain = create_retrieval_chain(self.retriever, question_answer_chain)
         return rag_chain
 
-    def create_conversational_rag_chain(self, rag_chain, session_type="main"):
+    def create_conversational_rag_chain(self, session_id: str):
 
-
-        def get_session_history(session_id: str):
-            type_session_uuid = self.generate_session_uuid(session_id, session_type)
-            
+        def get_session_history(session_id: str) -> BaseChatMessageHistory:
             try:
-                return PostgresChatMessageHistory(
+                return CustomPostgresChatMessageHistory(
                     self.postgres_table_name,
-                    type_session_uuid,
-                    sync_connection=self.postgres_conn
+                    session_id,
+                    self.postgres_conn
                 )
             except Exception as e:
-                logger.warning(f"Failed to create PostgreSQL history for {session_type}_{session_id}: {e}")
+                logger.warning(f"Failed to create PostgreSQL history for {session_id}: {e}")
                 return ChatMessageHistory()
 
         return RunnableWithMessageHistory(
-            rag_chain,
+            self.rag_chain,
             get_session_history,
             input_messages_key="input",
             history_messages_key="chat_history",
             output_messages_key="answer"
         )
 
-    def clear_intermediate_histories(self, session_id):
-
-        intermediate_types = ["products", "dosage"]
-        
-        try:
-            cursor = self.postgres_conn.cursor()
-            total_deleted = 0
-            
-            for session_type in intermediate_types:
-                type_session_uuid = self.generate_session_uuid(session_id, session_type)
-                cursor.execute(
-                    f"DELETE FROM {self.postgres_table_name} WHERE session_id = %s",
-                    (type_session_uuid,)
-                )
-                total_deleted += cursor.rowcount
-                
-            self.postgres_conn.commit()
-            cursor.close()
-            
-            if total_deleted > 0:
-                logger.debug(f"Cleared {total_deleted} intermediate history records for session {session_id}")
-        except Exception as e:
-            logger.debug(f"Failed to clear intermediate histories: {e}")
-
-    def chat(self, user_prompt, session_id):
+    def chat(self, user_prompt: str, session_id: str) -> str:
         logger.info(f"Processing query for session {session_id}: {user_prompt[:100]}...")
 
-        product_rag_chain = self.create_conversational_rag_chain(self.rag_chain_products, "products")
-        dosage_rag_chain = self.create_conversational_rag_chain(self.rag_chain_dosage, "dosage")
-        final_answer_chain_no_rag = self.create_conversational_rag_chain(self.rag_chain_final_no_rag, "final_no_rag")
-        final_answer_chain = self.create_conversational_rag_chain(self.rag_chain_final, "final_rag")
-
         try:
-            result1 = product_rag_chain.invoke(
+            conversational_chain = self.create_conversational_rag_chain(session_id)
+
+            result = conversational_chain.invoke(
                 {"input": user_prompt},
                 config={"configurable": {"session_id": session_id}}
             )
 
-            if result1["answer"] == "0":
-                logger.info("General question detected, using final answer chain")
-                result = final_answer_chain.invoke(
-                    {"input": user_prompt},
-                    config={"configurable": {"session_id": session_id}}
-                )
-                return result["answer"]
+            logger.info(f"Successfully processed query for session {session_id} with SINGLE API call")
+            return result["answer"]
 
-            product_names = [line.strip() for line in result1["answer"].split("\n") if line.strip()]
-            logger.info(f"Products identified: {product_names}")
-
-            dosage_results = []
-            for product_name in product_names:
-                result = dosage_rag_chain.invoke(
-                    {"input": product_name},
-                    config={"configurable": {"session_id": session_id}}
-                )
-                dosage_results.append(f"{product_name}\n{result['answer']}")
-
-            final_input = user_prompt.strip() + "\n\n" + "\n\n".join(dosage_results)
-            
-            if len(final_input) > MAX_CONTEXT_LENGTH:
-                user_query_part = user_prompt.strip() + "\n\n"
-                available_space = MAX_CONTEXT_LENGTH - len(user_query_part) - 100
-                
-                truncated_dosage = "\n\n".join(dosage_results)[:available_space]
-                final_input = user_query_part + truncated_dosage + "\n\n[Контекст обрезан]"
-                logger.warning(f"Context truncated to {len(final_input)} characters")
-
-            logger.info(f"Generating final answer with info about {len(dosage_results)} products")
-
-            final_answer = final_answer_chain_no_rag.invoke(
-                {"input": final_input},
-                config={"configurable": {"session_id": session_id}}
-            )
-
-            return final_answer["answer"]
-
-        finally:
-            self.clear_intermediate_histories(session_id)
+        except Exception as e:
+            logger.error(f"Error processing query for session {session_id}: {e}")
+            raise
 
     def update_prompt(self, new_prompt: str) -> bool:
         if self.prompt_service.update_prompt(new_prompt):
-            system_prompt = self.prompt_service.get_current_prompt()
-
-            self.rag_chain_final_no_rag = self.create_rag_chain(self.llm, self.history_aware_retriever_limited, system_prompt)
-            self.rag_chain_final = self.create_rag_chain(self.llm, self.history_aware_retriever, system_prompt)
-
+            self.unified_prompt = self.create_unified_prompt()
+            self.rag_chain = self.create_simple_rag_chain()
             return True
         return False
 
     def clear_history(self, session_id: str) -> bool:
         try:
-            session_types = ["main", "products", "dosage", "final_no_rag", "final_rag"]
-            
             cursor = self.postgres_conn.cursor()
-            total_deleted = 0
-            
-            for session_type in session_types:
-                type_session_uuid = self.generate_session_uuid(session_id, session_type)
-                cursor.execute(
-                    f"DELETE FROM {self.postgres_table_name} WHERE session_id = %s",
-                    (type_session_uuid,)
-                )
-                total_deleted += cursor.rowcount
-            
+            cursor.execute(
+                f"DELETE FROM {self.postgres_table_name} WHERE session_id = %s",
+                (session_id,)
+            )
+            deleted_count = cursor.rowcount
             self.postgres_conn.commit()
             cursor.close()
 
-            logger.info(f"History cleared: {total_deleted} PostgreSQL records for user {session_id}")
+            logger.info(f"History cleared: {deleted_count} records for session {session_id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to clear history for session_id {session_id}: {e}")
             return False
 
 
-class ColabKnowledgeService(KnowledgeService):
+class OptimizedColabKnowledgeService(KnowledgeService):
+
     def __init__(self):
         self.prompt_service = PostgresPromptService()
-        self.assistant = AQPAssistant(settings.CSV_FILE_PATH, self.prompt_service)
+        self.assistant = OptimizedAQPAssistant(settings.CSV_FILE_PATH, self.prompt_service)
 
     def process_query(self, query: str, session_id: str) -> str:
         return self.assistant.chat(query, session_id)
