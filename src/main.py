@@ -1,10 +1,10 @@
 import os
+import logging
 from src.bot.telegram_bot import TelegramBot
 from src.config.settings import settings
-from src.knowledge_base.knowledge_service import OptimizedColabKnowledgeService
+from src.knowledge_base.knowledge_service import ColabKnowledgeService
 from src.auth.auth_service import PostgresAuthService
 from src.prompt.prompt_service import PostgresPromptService
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ def main():
         logger.error("Failed to sync initial prompt.")
         return
 
-    knowledge_service = OptimizedColabKnowledgeService()
+    knowledge_service = ColabKnowledgeService()
     auth_service = PostgresAuthService()
     bot = TelegramBot(settings.TELEGRAM_TOKEN, knowledge_service, auth_service)
     bot.run()
