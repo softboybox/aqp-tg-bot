@@ -17,14 +17,11 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 from src.prompt.prompt_service import PromptService, PostgresPromptService
 from src.config.settings import settings
-from src.knowledge_base.rate_limiter import apply_global_rate_limiting
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_LENGTH = 4000
-
-apply_global_rate_limiting()
 
 
 class EmptyRetriever(BaseRetriever):
@@ -126,13 +123,7 @@ class AQPAssistant:
             ]
         )
 
-        llm = ChatOpenAI(
-            model="chatgpt-4o-latest", 
-            temperature=0,
-            max_retries=1,
-            request_timeout=120
-        )
-        
+        llm = ChatOpenAI(model="chatgpt-4o-latest", temperature=0)
         history_aware_retriever = create_history_aware_retriever(
             llm, retriever, contextualize_q_prompt
         )
@@ -150,20 +141,50 @@ class AQPAssistant:
         rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
         return rag_chain
 
-    def create_conversational_rag_chain(self, rag_chain, session_type="main"):
-
-        def get_session_history(session_id: str):
-            type_session_uuid = self.generate_session_uuid(session_id, session_type)
-
+    def get_limited_session_history(self, session_id: str, session_type: str = "main"):
+        type_session_uuid = self.generate_session_uuid(session_id, session_type)
+        
+        try:
+            history = PostgresChatMessageHistory(
+                self.postgres_table_name,
+                type_session_uuid,
+                sync_connection=self.postgres_conn
+            )
+            
+            if len(history.messages) > 2:
+                all_messages = history.messages
+                
+                cursor = self.postgres_conn.cursor()
+                cursor.execute(
+                    f"DELETE FROM {self.postgres_table_name} WHERE session_id = %s",
+                    (type_session_uuid,)
+                )
+                self.postgres_conn.commit()
+                cursor.close()
+                
+                recent_messages = all_messages[-2:]
+                for message in recent_messages:
+                    history.add_message(message)
+                
+                logger.info(f"📝 History trimmed to {len(recent_messages)} messages for session {session_id}:{session_type}")
+            
+            return history
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting session history: {str(e)}")
             try:
                 return PostgresChatMessageHistory(
                     self.postgres_table_name,
                     type_session_uuid,
                     sync_connection=self.postgres_conn
                 )
-            except Exception as e:
-                logger.warning(f"Failed to create PostgreSQL history for {session_type}_{session_id}: {e}")
+            except Exception:
                 return ChatMessageHistory()
+
+    def create_conversational_rag_chain(self, rag_chain, session_type="main"):
+
+        def get_session_history(session_id: str):
+            return self.get_limited_session_history(session_id, session_type)
 
         return RunnableWithMessageHistory(
             rag_chain,
