@@ -9,20 +9,24 @@ class RateLimitedChatOpenAI(ChatOpenAI):
     _last_request_time = 0
     _request_count = 0
     _start_time = time.time()
+    _calls_per_minute = 40
+    _min_interval = 60.0 / _calls_per_minute
     
     def __init__(self, calls_per_minute=40, *args, **kwargs):
+        RateLimitedChatOpenAI._calls_per_minute = calls_per_minute
+        RateLimitedChatOpenAI._min_interval = 60.0 / calls_per_minute
+        
         super().__init__(*args, **kwargs)
-        self.calls_per_minute = calls_per_minute
-        self.min_interval = 60.0 / calls_per_minute
-        logger.info(f"🚦 Rate limiter initialized: {calls_per_minute} calls/min (interval: {self.min_interval:.2f}s)")
+        
+        logger.info(f"🚦 Rate limiter initialized: {calls_per_minute} calls/min (interval: {RateLimitedChatOpenAI._min_interval:.2f}s)")
     
     def _call(self, *args, **kwargs):
         current_time = time.time()
         
         time_since_last = current_time - RateLimitedChatOpenAI._last_request_time
         
-        if time_since_last < self.min_interval:
-            sleep_time = self.min_interval - time_since_last
+        if time_since_last < RateLimitedChatOpenAI._min_interval:
+            sleep_time = RateLimitedChatOpenAI._min_interval - time_since_last
             logger.info(f"⏱️ Rate limit: sleeping {sleep_time:.2f}s")
             time.sleep(sleep_time)
         
