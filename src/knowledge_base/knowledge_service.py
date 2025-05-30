@@ -15,6 +15,7 @@ from langchain_postgres import PostgresChatMessageHistory
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, AIMessage
 from src.prompt.prompt_service import PromptService, PostgresPromptService
 from src.config.settings import settings
 
@@ -164,6 +165,27 @@ class AQPAssistant:
             output_messages_key="answer"
         )
 
+    def get_main_session_history(self, session_id: str):
+        main_session_uuid = self.generate_session_uuid(session_id, "main")
+        try:
+            return PostgresChatMessageHistory(
+                self.postgres_table_name,
+                main_session_uuid,
+                sync_connection=self.postgres_conn
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create main session history for {session_id}: {e}")
+            return ChatMessageHistory()
+
+    def save_to_main_history(self, session_id: str, user_message: str, bot_response: str):
+        try:
+            main_history = self.get_main_session_history(session_id)
+            main_history.add_message(HumanMessage(content=user_message))
+            main_history.add_message(AIMessage(content=bot_response))
+            logger.debug(f"Saved conversation to main history for session {session_id}")
+        except Exception as e:
+            logger.error(f"Failed to save conversation to main history for session {session_id}: {e}")
+
     def clear_intermediate_histories(self, session_id):
 
         intermediate_types = ["products", "dosage", "final_no_rag", "final_rag"]
@@ -207,6 +229,10 @@ class AQPAssistant:
         final_answer_chain_no_rag = self.create_conversational_rag_chain(self.rag_chain_final_no_rag, "final_no_rag")
         final_answer_chain = self.create_conversational_rag_chain(self.rag_chain_final, "final_rag")
 
+        main_history = self.get_main_session_history(session_id)
+        
+        final_answer = None
+
         try:
             result1 = product_rag_chain.invoke(
                 {"input": user_prompt},
@@ -219,37 +245,40 @@ class AQPAssistant:
                     {"input": user_prompt},
                     config={"configurable": {"session_id": session_id}}
                 )
-                return result["answer"]
+                final_answer = result["answer"]
+            else:
+                product_names = [line.strip() for line in result1["answer"].split("\n") if line.strip()]
+                logger.info(f"Products identified: {product_names}")
 
-            product_names = [line.strip() for line in result1["answer"].split("\n") if line.strip()]
-            logger.info(f"Products identified: {product_names}")
+                dosage_results = []
+                for product_name in product_names:
+                    result = dosage_rag_chain.invoke(
+                        {"input": product_name},
+                        config={"configurable": {"session_id": session_id}}
+                    )
+                    dosage_results.append(f"{product_name}\n{result['answer']}")
 
-            dosage_results = []
-            for product_name in product_names:
-                result = dosage_rag_chain.invoke(
-                    {"input": product_name},
+                final_input = user_prompt.strip() + "\n\n" + "\n\n".join(dosage_results)
+
+                if len(final_input) > MAX_CONTEXT_LENGTH:
+                    user_query_part = user_prompt.strip() + "\n\n"
+                    available_space = MAX_CONTEXT_LENGTH - len(user_query_part) - 100
+
+                    truncated_dosage = "\n\n".join(dosage_results)[:available_space]
+                    final_input = user_query_part + truncated_dosage + "\n\n[Контекст обрезан]"
+                    logger.warning(f"Context truncated to {len(final_input)} characters")
+
+                logger.info(f"Generating final answer with info about {len(dosage_results)} products")
+
+                final_answer_result = final_answer_chain_no_rag.invoke(
+                    {"input": final_input},
                     config={"configurable": {"session_id": session_id}}
                 )
-                dosage_results.append(f"{product_name}\n{result['answer']}")
+                final_answer = final_answer_result["answer"]
 
-            final_input = user_prompt.strip() + "\n\n" + "\n\n".join(dosage_results)
+            self.save_to_main_history(session_id, user_prompt, final_answer)
 
-            if len(final_input) > MAX_CONTEXT_LENGTH:
-                user_query_part = user_prompt.strip() + "\n\n"
-                available_space = MAX_CONTEXT_LENGTH - len(user_query_part) - 100
-
-                truncated_dosage = "\n\n".join(dosage_results)[:available_space]
-                final_input = user_query_part + truncated_dosage + "\n\n[Контекст обрезан]"
-                logger.warning(f"Context truncated to {len(final_input)} characters")
-
-            logger.info(f"Generating final answer with info about {len(dosage_results)} products")
-
-            final_answer = final_answer_chain_no_rag.invoke(
-                {"input": final_input},
-                config={"configurable": {"session_id": session_id}}
-            )
-
-            return final_answer["answer"]
+            return final_answer
 
         finally:
             self.clear_intermediate_histories(session_id)
