@@ -141,50 +141,20 @@ class AQPAssistant:
         rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
         return rag_chain
 
-    def get_limited_session_history(self, session_id: str, session_type: str = "main"):
-        type_session_uuid = self.generate_session_uuid(session_id, session_type)
-        
-        try:
-            history = PostgresChatMessageHistory(
-                self.postgres_table_name,
-                type_session_uuid,
-                sync_connection=self.postgres_conn
-            )
-            
-            if len(history.messages) > 2:
-                all_messages = history.messages
-                
-                cursor = self.postgres_conn.cursor()
-                cursor.execute(
-                    f"DELETE FROM {self.postgres_table_name} WHERE session_id = %s",
-                    (type_session_uuid,)
-                )
-                self.postgres_conn.commit()
-                cursor.close()
-                
-                recent_messages = all_messages[-2:]
-                for message in recent_messages:
-                    history.add_message(message)
-                
-                logger.info(f"📝 History trimmed to {len(recent_messages)} messages for session {session_id}:{session_type}")
-            
-            return history
-            
-        except Exception as e:
-            logger.error(f"❌ Error getting session history: {str(e)}")
+    def create_conversational_rag_chain(self, rag_chain, session_type="main"):
+
+        def get_session_history(session_id: str):
+            type_session_uuid = self.generate_session_uuid(session_id, session_type)
+
             try:
                 return PostgresChatMessageHistory(
                     self.postgres_table_name,
                     type_session_uuid,
                     sync_connection=self.postgres_conn
                 )
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Failed to create PostgreSQL history for {session_type}_{session_id}: {e}")
                 return ChatMessageHistory()
-
-    def create_conversational_rag_chain(self, rag_chain, session_type="main"):
-
-        def get_session_history(session_id: str):
-            return self.get_limited_session_history(session_id, session_type)
 
         return RunnableWithMessageHistory(
             rag_chain,
@@ -196,7 +166,7 @@ class AQPAssistant:
 
     def clear_intermediate_histories(self, session_id):
 
-        intermediate_types = ["products", "dosage"]
+        intermediate_types = ["products", "dosage", "final_no_rag", "final_rag"]
 
         try:
             cursor = self.postgres_conn.cursor()
@@ -208,15 +178,26 @@ class AQPAssistant:
                     f"DELETE FROM {self.postgres_table_name} WHERE session_id = %s",
                     (type_session_uuid,)
                 )
-                total_deleted += cursor.rowcount
+                deleted_count = cursor.rowcount
+                total_deleted += deleted_count
+                
+                if deleted_count > 0:
+                    logger.debug(f"Cleared {deleted_count} records from {session_type} session for {session_id}")
 
             self.postgres_conn.commit()
             cursor.close()
 
             if total_deleted > 0:
-                logger.debug(f"Cleared {total_deleted} intermediate history records for session {session_id}")
+                logger.info(f"Cleared {total_deleted} intermediate history records for session {session_id}")
+            else:
+                logger.debug(f"No intermediate history records to clear for session {session_id}")
+                
         except Exception as e:
-            logger.debug(f"Failed to clear intermediate histories: {e}")
+            logger.error(f"Failed to clear intermediate histories for session {session_id}: {e}")
+            try:
+                self.postgres_conn.rollback()
+            except:
+                pass
 
     def chat(self, user_prompt, session_id):
         logger.info(f"Processing query for session {session_id}: {user_prompt[:100]}...")
