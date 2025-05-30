@@ -182,7 +182,7 @@ class AQPAssistant:
             main_history = self.get_main_session_history(session_id)
             main_history.add_message(HumanMessage(content=user_message))
             main_history.add_message(AIMessage(content=bot_response))
-            logger.debug(f"Saved conversation to main history for session {session_id}")
+            logger.info(f"Saved conversation to main history for session {session_id}")
         except Exception as e:
             logger.error(f"Failed to save conversation to main history for session {session_id}: {e}")
 
@@ -224,13 +224,13 @@ class AQPAssistant:
     def chat(self, user_prompt, session_id):
         logger.info(f"Processing query for session {session_id}: {user_prompt[:100]}...")
 
+        main_conversational_chain = self.create_conversational_rag_chain(self.rag_chain_final, "main")
+        
         product_rag_chain = self.create_conversational_rag_chain(self.rag_chain_products, "products")
         dosage_rag_chain = self.create_conversational_rag_chain(self.rag_chain_dosage, "dosage")
         final_answer_chain_no_rag = self.create_conversational_rag_chain(self.rag_chain_final_no_rag, "final_no_rag")
         final_answer_chain = self.create_conversational_rag_chain(self.rag_chain_final, "final_rag")
 
-        main_history = self.get_main_session_history(session_id)
-        
         final_answer = None
 
         try:
@@ -240,12 +240,13 @@ class AQPAssistant:
             )
 
             if result1["answer"] == "0":
-                logger.info("General question detected, using final answer chain")
-                result = final_answer_chain.invoke(
+                logger.info("General question detected, using main conversational chain with history")
+                result = main_conversational_chain.invoke(
                     {"input": user_prompt},
                     config={"configurable": {"session_id": session_id}}
                 )
                 final_answer = result["answer"]
+                
             else:
                 product_names = [line.strip() for line in result1["answer"].split("\n") if line.strip()]
                 logger.info(f"Products identified: {product_names}")
@@ -270,14 +271,14 @@ class AQPAssistant:
 
                 logger.info(f"Generating final answer with info about {len(dosage_results)} products")
 
-                final_answer_result = final_answer_chain_no_rag.invoke(
+                # Для ответов с продуктами используем основную цепочку с историей
+                final_answer_result = main_conversational_chain.invoke(
                     {"input": final_input},
                     config={"configurable": {"session_id": session_id}}
                 )
                 final_answer = final_answer_result["answer"]
 
-            self.save_to_main_history(session_id, user_prompt, final_answer)
-
+            logger.info(f"Generated final answer, length: {len(final_answer)} chars")
             return final_answer
 
         finally:
