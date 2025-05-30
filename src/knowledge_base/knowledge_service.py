@@ -17,12 +17,14 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 from src.prompt.prompt_service import PromptService, PostgresPromptService
 from src.config.settings import settings
-from src.knowledge_base.rate_limiter import RateLimitedChatOpenAI
+from src.knowledge_base.rate_limiter import apply_global_rate_limiting
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_LENGTH = 4000
+
+apply_global_rate_limiting()
 
 
 class EmptyRetriever(BaseRetriever):
@@ -124,8 +126,7 @@ class AQPAssistant:
             ]
         )
 
-        llm = RateLimitedChatOpenAI(
-            calls_per_minute=40,
+        llm = ChatOpenAI(
             model="chatgpt-4o-latest", 
             temperature=0,
             max_retries=1,
