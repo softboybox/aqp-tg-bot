@@ -1,0 +1,31 @@
+version: '3.8'
+services:
+  bot:
+    image: spunchadmin/aqp_tg_bot:prod
+    depends_on:
+      - db
+    volumes:
+      - ./faiss_index:/app/faiss_index
+    networks:
+      - mainnet
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+      - ./db/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    networks:
+      - mainnet
+
+volumes:
+  postgres_data:
+
+networks:
+  mainnet:
+    driver: bridge
