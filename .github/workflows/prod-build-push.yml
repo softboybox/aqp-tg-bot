@@ -1,4 +1,4 @@
-name: Dev Build and Push
+name: Prod Build and Push
 
 on:
   workflow_dispatch:
