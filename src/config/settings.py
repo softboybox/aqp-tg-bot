@@ -13,8 +13,20 @@ class Settings:
         "password": os.getenv("DB_PASSWORD"),
     }
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    CSV_FILE_PATH = os.getenv("CSV_FILE_PATH", "/app/csv_files/Хімія Aquadoctor - Аркуш1.csv")
+
+    CSV_DIR = os.getenv("CSV_DIR", "/pdf_files")
+    CSV_FILE_NAME = os.getenv("CSV_FILE_NAME", "knowledge.csv")
+    CSV_FILE_PATH = os.getenv("CSV_FILE_PATH", os.path.join(CSV_DIR, CSV_FILE_NAME))
+
     FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "/app/faiss_index")
+    FAISS_INDEX_TMP = os.getenv("FAISS_INDEX_TMP", "/app/faiss_index_tmp")
+
+    TEMP_CSV_DIR = os.getenv("TEMP_CSV_DIR", os.path.join(CSV_DIR, "temp"))
+    BACKUP_CSV_DIR = os.getenv("BACKUP_CSV_DIR", os.path.join(CSV_DIR, "backup"))
+
+    MAX_CSV_SIZE_MB = int(os.getenv("MAX_CSV_SIZE_MB", "10"))
+    EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "text-embedding-3-small")
+
     LC_CHAT_HISTORY_TABLE_NAME = os.getenv("LC_CHAT_HISTORY_TABLE_NAME")
     LC_DATABASE_URL = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
@@ -70,7 +82,7 @@ class Settings:
     нижче від загальної висоти басейну. GPT не запитує про наявність системи фільтрації.
     Якщо користувач питає, де купити продукцію або зазначає, що хоче придбати хімію для басейну, GPT рекомендує лише Aquapolis.ua як перевірений магазин.
     GPT враховує, якщо препарат у таблетках чи гранулах - вказує грамовку та вираховує необхідну кількість таблеток чи гранул.
-    GPT не плутає гранули та таблетки. GPT забов'язаний перераховати користувачу необхідні препарати під запит з розрахунком фасування.
+    GPT не плутає гранули та таблетки. GPT забов'язаний перерахувати користувачу необхідні препарати під запит з розрахунком фасування.
     Опціонально: Якщо GPT вказує препарат AquaDoctor C-60T, то враховує його дозування: у вигляді швидкорозчиних таблеток по 20 г. Первинна (шокова) обробка води: 1 раз в 30 днів із розрахунку 1 таблетка на 2 м3 води.
     Опціонально: Якщо GPT вказує препарат AquaDoctor C-60, то враховує його дозування: у вигляді швидкорозчинних гранул. Первинна (шокова) обробка води: 1 раз в 30 днів із витрат 10 грам препарату на 1 м3 води.
     Також користувач може отримати консультацію за телефоном 0800300144.
