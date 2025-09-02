@@ -4,7 +4,7 @@ import psycopg
 import uuid
 import json
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Tuple
 from langchain_community.document_loaders import CSVLoader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -21,12 +21,19 @@ from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langchain_core.chat_history import BaseChatMessageHistory
 from src.prompt.prompt_service import PromptService, PostgresPromptService
 from src.config.settings import settings
+from src.knowledge_base.csv_manager import (
+    update_knowledge_base_atomic, 
+    kb_status_meta, 
+    get_current_retriever
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_LENGTH = 4000
 
+WORD_WINDOW = 50_000
+WORD_CHUNK = 10_000
 
 class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
 
@@ -35,6 +42,66 @@ class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
         self.table_name = table_name
         self.session_id = session_id
         self.connection = connection
+
+    def _fetch_rows_ordered(self):
+        cur = self.connection.cursor()
+        cur.execute(
+            f"SELECT id, type, content FROM {self.table_name} WHERE session_id = %s ORDER BY id ASC",
+            (self.session_id,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return rows  # [(id, type, content), ...]
+
+    @staticmethod
+    def _word_count(text: str) -> int:
+        return len((text or "").split())
+
+    def _total_words_and_index(self):
+        rows = self._fetch_rows_ordered()
+        total = 0
+        indexed = []
+        for _id, _type, content in rows:
+            wc = self._word_count(content)
+            total += wc
+            indexed.append((_id, _type, content or "", wc))
+        return total, indexed
+
+    def _drop_first_n_words(self, n: int):
+        if n <= 0:
+            return
+        total, indexed = self._total_words_and_index()
+        if total == 0:
+            return
+
+        remain = n
+        cur = self.connection.cursor()
+        for _id, _type, content, wc in indexed:
+            if remain <= 0:
+                break
+            if wc <= remain:
+                cur.execute(
+                    f"DELETE FROM {self.table_name} WHERE id = %s",
+                    (_id,)
+                )
+                remain -= wc
+            else:
+                words = (content or "").split()
+                new_content = " ".join(words[remain:])
+                cur.execute(
+                    f"UPDATE {self.table_name} SET content = %s WHERE id = %s",
+                    (new_content, _id)
+                )
+                remain = 0
+                break
+        self.connection.commit()
+        cur.close()
+
+    def _trim_history_if_needed(self):
+        total, _ = self._total_words_and_index()
+        if total >= WORD_WINDOW:
+            logger.info(f"History trimming: total={total} >= {WORD_WINDOW}, removing {WORD_CHUNK} from head")
+            self._drop_first_n_words(WORD_CHUNK)
 
     @property
     def messages(self) -> List[BaseMessage]:
@@ -62,16 +129,18 @@ class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
     def add_message(self, message: BaseMessage) -> None:
         try:
             cursor = self.connection.cursor()
-            
             message_type = "human" if isinstance(message, HumanMessage) else "ai"
             content = message.content
-            
+
             cursor.execute(
                 f"INSERT INTO {self.table_name} (session_id, type, content) VALUES (%s, %s, %s)",
                 (self.session_id, message_type, content)
             )
             self.connection.commit()
             cursor.close()
+
+            self._trim_history_if_needed()
+
         except Exception as e:
             logger.error(f"Error adding message: {e}")
             try:
@@ -115,6 +184,14 @@ class KnowledgeService(ABC):
 
     @abstractmethod
     def clear_history(self, session_id: str) -> bool:
+        pass
+
+    @abstractmethod
+    async def update_knowledge_base(self, temp_csv_path: str) -> Tuple[bool, str, dict]:
+        pass
+
+    @abstractmethod
+    def get_knowledge_base_status(self) -> dict:
         pass
 
 
@@ -181,16 +258,20 @@ class AQPAssistant:
     def vectorize_content(self, file_path):
         logger.info(f"Loading CSV from {file_path}")
         try:
+            if not os.path.exists(file_path):
+                logger.warning(f"CSV file not found: {file_path}, creating empty retriever")
+                return EmptyRetriever()
+                
             loader = CSVLoader(file_path)
             pages = loader.load_and_split()
             if not pages:
                 logger.error(f"No CSV data found in {file_path}")
-                raise ValueError("No CSV data available to create FAISS index")
+                return EmptyRetriever()
 
             text_splitter = CharacterTextSplitter(chunk_size=1600, chunk_overlap=10)
             docs_splitted = text_splitter.split_documents(pages)
 
-            embeddings = OpenAIEmbeddings()
+            embeddings = OpenAIEmbeddings(model=settings.EMBEDDINGS_MODEL)
             db = FAISS.from_documents(docs_splitted, embeddings)
             retriever = db.as_retriever(
                 search_type="mmr", search_kwargs={'k': 10, 'lambda_mult': 0.25})
@@ -199,7 +280,35 @@ class AQPAssistant:
             return retriever
         except Exception as e:
             logger.error(f"Error creating retriever from CSV: {e}")
-            raise
+            return EmptyRetriever()
+
+    def hot_swap_retriever(self, new_retriever):
+        logger.info("Performing hot swap of retriever")
+        
+        self.retriever = new_retriever
+        
+        _, self.history_aware_retriever = self.initialize_history_aware_retriever(self.retriever)
+        
+        self.rag_chain_products_no_history = self.create_simple_rag_chain(
+            self.llm, 
+            self.retriever,
+            self.products_prompt
+        )
+
+        self.rag_chain_dosage_no_history = self.create_simple_rag_chain(
+            self.llm, 
+            self.retriever,
+            self.dosage_prompt
+        )
+
+        system_prompt = self.prompt_service.get_current_prompt()
+        self.rag_chain_final = self.create_rag_chain(
+            self.llm, 
+            self.history_aware_retriever, 
+            system_prompt
+        )
+        
+        logger.info("Hot swap completed successfully")
 
     def initialize_history_aware_retriever(self, retriever):
         contextualize_q_system_prompt = (
@@ -393,3 +502,27 @@ class ColabKnowledgeService(KnowledgeService):
 
     def clear_history(self, session_id: str) -> bool:
         return self.assistant.clear_history(session_id)
+
+    async def update_knowledge_base(self, temp_csv_path: str) -> Tuple[bool, str, dict]:
+        logger.info(f"Starting knowledge base update with file: {temp_csv_path}")
+        
+        ok, msg, meta = await update_knowledge_base_atomic(temp_csv_path)
+        if not ok:
+            logger.error(f"Knowledge base update failed: {msg}")
+            return ok, msg, meta
+
+        try:
+            new_retriever = get_current_retriever()
+            if new_retriever:
+                self.assistant.hot_swap_retriever(new_retriever)
+                logger.info("Successfully performed hot swap of retriever")
+                return True, "✅ " + msg, meta
+            else:
+                logger.error("Failed to get new retriever after update")
+                return False, "Индекс обновлен, но не удалось загрузить новый ретривер", meta
+        except Exception as e:
+            logger.error(f"Error during hot swap: {e}")
+            return False, f"Индекс обновлен, но ошибка при горячей замене: {str(e)}", meta
+
+    def get_knowledge_base_status(self) -> dict:
+        return kb_status_meta()

@@ -13,10 +13,13 @@ def ensure_directories_exist():
     directories = [
         os.path.dirname(settings.CSV_FILE_PATH),
         settings.FAISS_INDEX_PATH,
+        settings.TEMP_CSV_DIR,
+        settings.BACKUP_CSV_DIR,
+        os.path.dirname(settings.FAISS_INDEX_TMP),
     ]
 
     for directory in directories:
-        if not os.path.exists(directory):
+        if directory and not os.path.exists(directory):
             logger.info(f"Creating directory: {directory}")
             os.makedirs(directory, exist_ok=True)
 
