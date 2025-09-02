@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_LENGTH = 4000
 
+WORD_WINDOW = 50_000
+WORD_CHUNK = 10_000
 
 class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
 
@@ -40,6 +42,66 @@ class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
         self.table_name = table_name
         self.session_id = session_id
         self.connection = connection
+
+    def _fetch_rows_ordered(self):
+        cur = self.connection.cursor()
+        cur.execute(
+            f"SELECT id, type, content FROM {self.table_name} WHERE session_id = %s ORDER BY id ASC",
+            (self.session_id,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        return rows  # [(id, type, content), ...]
+
+    @staticmethod
+    def _word_count(text: str) -> int:
+        return len((text or "").split())
+
+    def _total_words_and_index(self):
+        rows = self._fetch_rows_ordered()
+        total = 0
+        indexed = []
+        for _id, _type, content in rows:
+            wc = self._word_count(content)
+            total += wc
+            indexed.append((_id, _type, content or "", wc))
+        return total, indexed
+
+    def _drop_first_n_words(self, n: int):
+        if n <= 0:
+            return
+        total, indexed = self._total_words_and_index()
+        if total == 0:
+            return
+
+        remain = n
+        cur = self.connection.cursor()
+        for _id, _type, content, wc in indexed:
+            if remain <= 0:
+                break
+            if wc <= remain:
+                cur.execute(
+                    f"DELETE FROM {self.table_name} WHERE id = %s",
+                    (_id,)
+                )
+                remain -= wc
+            else:
+                words = (content or "").split()
+                new_content = " ".join(words[remain:])
+                cur.execute(
+                    f"UPDATE {self.table_name} SET content = %s WHERE id = %s",
+                    (new_content, _id)
+                )
+                remain = 0
+                break
+        self.connection.commit()
+        cur.close()
+
+    def _trim_history_if_needed(self):
+        total, _ = self._total_words_and_index()
+        if total >= WORD_WINDOW:
+            logger.info(f"History trimming: total={total} >= {WORD_WINDOW}, removing {WORD_CHUNK} from head")
+            self._drop_first_n_words(WORD_CHUNK)
 
     @property
     def messages(self) -> List[BaseMessage]:
@@ -67,16 +129,18 @@ class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
     def add_message(self, message: BaseMessage) -> None:
         try:
             cursor = self.connection.cursor()
-            
             message_type = "human" if isinstance(message, HumanMessage) else "ai"
             content = message.content
-            
+
             cursor.execute(
                 f"INSERT INTO {self.table_name} (session_id, type, content) VALUES (%s, %s, %s)",
                 (self.session_id, message_type, content)
             )
             self.connection.commit()
             cursor.close()
+
+            self._trim_history_if_needed()
+
         except Exception as e:
             logger.error(f"Error adding message: {e}")
             try:
