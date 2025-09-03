@@ -492,7 +492,16 @@ class AQPAssistant:
 class ColabKnowledgeService(KnowledgeService):
     def __init__(self):
         self.prompt_service = PostgresPromptService()
-        self.assistant = AQPAssistant(settings.CSV_FILE_PATH, self.prompt_service)
+        
+        meta = kb_status_meta()
+        csv_path = meta.get("csv_path")
+        
+        if csv_path and os.path.exists(csv_path):
+            logger.info(f"Using CSV from metadata: {csv_path}")
+            self.assistant = AQPAssistant(csv_path, self.prompt_service)
+        else:
+            logger.info(f"Using default CSV path: {settings.CSV_FILE_PATH}")
+            self.assistant = AQPAssistant(settings.CSV_FILE_PATH, self.prompt_service)
 
     def process_query(self, query: str, session_id: str) -> str:
         return self.assistant.chat(query, session_id)

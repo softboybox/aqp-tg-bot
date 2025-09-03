@@ -236,24 +236,41 @@ async def update_knowledge_base_atomic(temp_csv_path: str) -> Tuple[bool, str, d
             logger.error(f"Error loading new index: {e}")
             return False, f"Индекс подменён, но не загрузился: {e}", {}
 
-        csv_backup = settings.CSV_FILE_PATH + ".bak"
-        if os.path.exists(settings.CSV_FILE_PATH):
-            shutil.copy2(settings.CSV_FILE_PATH, csv_backup)
-            os.remove(settings.CSV_FILE_PATH)
-            logger.info("Backed up and removed current CSV")
+        temp_filename = os.path.basename(temp_csv_path)
+        if temp_filename.startswith(tuple('0123456789')) and '_' in temp_filename:
+            original_filename = temp_filename.split('_', 1)[1]
+        else:
+            original_filename = temp_filename
+        
+        new_csv_path = os.path.join(settings.CSV_DIR, original_filename)
+        
+        csv_backup = new_csv_path + ".bak"
+        if os.path.exists(new_csv_path):
+            shutil.copy2(new_csv_path, csv_backup)
+            os.remove(new_csv_path)
+            logger.info(f"Backed up and removed current CSV: {new_csv_path}")
 
-        _safe_move(temp_csv_path, settings.CSV_FILE_PATH)
-        logger.info("Replaced CSV file (safe move)")
+        if os.path.exists(settings.CSV_FILE_PATH) and settings.CSV_FILE_PATH != new_csv_path:
+            backup_default = settings.CSV_FILE_PATH + ".bak"
+            shutil.copy2(settings.CSV_FILE_PATH, backup_default)
+            os.remove(settings.CSV_FILE_PATH)
+            logger.info(f"Backed up and removed default CSV: {settings.CSV_FILE_PATH}")
+
+        _safe_move(temp_csv_path, new_csv_path)
+        logger.info(f"Replaced CSV file (safe move): {new_csv_path}")
 
         if os.path.exists(csv_backup):
             os.remove(csv_backup)
+        backup_default = settings.CSV_FILE_PATH + ".bak"
+        if os.path.exists(backup_default):
+            os.remove(backup_default)
 
         meta = {
-            "csv_path": settings.CSV_FILE_PATH,
+            "csv_path": new_csv_path,
             "row_count": len(texts),
-            "checksum": _checksum(settings.CSV_FILE_PATH),
+            "checksum": _checksum(new_csv_path),
             "built_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            "csv_mtime": datetime.utcfromtimestamp(os.path.getmtime(settings.CSV_FILE_PATH)).isoformat(timespec="seconds") + "Z",
+            "csv_mtime": datetime.utcfromtimestamp(os.path.getmtime(new_csv_path)).isoformat(timespec="seconds") + "Z",
         }
         _write_meta(meta)
         logger.info("Updated metadata")
