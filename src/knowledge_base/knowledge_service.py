@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 
 MAX_CONTEXT_LENGTH = 4000
 
-WORD_WINDOW = 50_000
-WORD_CHUNK = 10_000
+WORD_WINDOW = 3000
+WORD_CHUNK = 500
 
 # In-memory маркеры обрезки контекста с thread-безопасностью
 _TRIM_EVENTS = {}

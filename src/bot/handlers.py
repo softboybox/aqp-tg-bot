@@ -451,7 +451,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except (AttributeError, TypeError):
                 trimmed = 0
             if trimmed > 0:
-                note = "⚠️ Контекстне вікно досягло ліміту та було очищено (видалено перші 10 000 слів)"
+                note = "⚠️ Контекстне вікно досягло ліміту та було очищено (видалено перші 500 слів)"
                 if trimmed > 1:
                     note += f" ×{trimmed}"
                 await update.message.reply_text(note)
