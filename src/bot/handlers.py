@@ -444,6 +444,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send response: {e}")
             await update.message.reply_text(response)
+            
+        if settings.DEBUG_CONTEXT_TRIM_NOTIFY:
+            try:
+                trimmed = await knowledge_service.get_and_clear_trim_count(session_id)
+            except (AttributeError, TypeError):
+                trimmed = 0
+            if trimmed > 0:
+                note = "⚠️ Контекстне вікно досягло ліміту та було очищено (видалено перші 10 000 слів)"
+                if trimmed > 1:
+                    note += f" ×{trimmed}"
+                await update.message.reply_text(note)
+                
     except Exception as e:
         logger.error(f"Error processing query for user {user_id}: {e}")
         await update.message.reply_text("Вибачте, сталася помилка. Спробуйте ще раз.")

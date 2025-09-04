@@ -30,6 +30,8 @@ class Settings:
     LC_CHAT_HISTORY_TABLE_NAME = os.getenv("LC_CHAT_HISTORY_TABLE_NAME")
     LC_DATABASE_URL = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['database']}"
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+
+    DEBUG_CONTEXT_TRIM_NOTIFY = True
     
     PRODUCTS_PROMPT =  """
         Ти є експертом з хімії для басейнів і спеціалізуєшся виключно на підборі продукції бренду AquaDoctor.

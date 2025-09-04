@@ -5,6 +5,7 @@ import uuid
 import json
 from abc import ABC, abstractmethod
 from typing import List, Tuple
+from threading import Lock
 from langchain_community.document_loaders import CSVLoader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -34,6 +35,20 @@ MAX_CONTEXT_LENGTH = 4000
 
 WORD_WINDOW = 50_000
 WORD_CHUNK = 10_000
+
+# In-memory маркеры обрезки контекста с thread-безопасностью
+_TRIM_EVENTS = {}
+_TRIM_LOCK = Lock()
+
+def _mark_trim_event(session_id: str, inc: int = 1) -> None:
+    """Отметить событие обрезки контекста для сессии"""
+    with _TRIM_LOCK:
+        _TRIM_EVENTS[session_id] = _TRIM_EVENTS.get(session_id, 0) + inc
+
+def consume_trim_events(session_id: str) -> int:
+    """Получить и очистить количество событий обрезки для сессии"""
+    with _TRIM_LOCK:
+        return _TRIM_EVENTS.pop(session_id, 0)
 
 class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
 
@@ -102,6 +117,10 @@ class CustomPostgresChatMessageHistory(BaseChatMessageHistory):
         if total >= WORD_WINDOW:
             logger.info(f"History trimming: total={total} >= {WORD_WINDOW}, removing {WORD_CHUNK} from head")
             self._drop_first_n_words(WORD_CHUNK)
+            
+            # Отмечаем событие обрезки ТОЛЬКО если флаг включен
+            if settings.DEBUG_CONTEXT_TRIM_NOTIFY:
+                _mark_trim_event(self.session_id)
 
     @property
     def messages(self) -> List[BaseMessage]:
@@ -194,6 +213,10 @@ class KnowledgeService(ABC):
     def get_knowledge_base_status(self) -> dict:
         pass
 
+    @abstractmethod
+    async def get_and_clear_trim_count(self, session_id: str) -> int:
+        pass
+
 
 class AQPAssistant:
     def __init__(self, file_path, prompt_service: PromptService):
@@ -254,6 +277,11 @@ class AQPAssistant:
             return base_session_id
         namespace_uuid = uuid.UUID(base_session_id)
         return str(uuid.uuid5(namespace_uuid, session_type))
+
+    async def get_and_clear_trim_count(self, session_id: str) -> int:
+        """Async-обёртка для совместимости с хендлером"""
+        main_session_uuid = self.generate_session_uuid(session_id, "main")
+        return consume_trim_events(main_session_uuid)
 
     def vectorize_content(self, file_path):
         logger.info(f"Loading CSV from {file_path}")
@@ -511,6 +539,9 @@ class ColabKnowledgeService(KnowledgeService):
 
     def clear_history(self, session_id: str) -> bool:
         return self.assistant.clear_history(session_id)
+
+    async def get_and_clear_trim_count(self, session_id: str) -> int:
+        return await self.assistant.get_and_clear_trim_count(session_id)
 
     async def update_knowledge_base(self, temp_csv_path: str) -> Tuple[bool, str, dict]:
         logger.info(f"Starting knowledge base update with file: {temp_csv_path}")
