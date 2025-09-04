@@ -215,9 +215,11 @@ async def kb_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 from datetime import datetime
                 mtime_str = datetime.utcfromtimestamp(file_mtime).isoformat(timespec="seconds") + "Z"
                 
+                actual_filename = os.path.basename(settings.CSV_FILE_PATH)
+                
                 status_text = (
                     "📚 *Статус бази знань*\n\n"
-                    f"📄 Файл: `{os.path.basename(settings.CSV_FILE_PATH)}`\n"
+                    f"📄 Файл: `{actual_filename}`\n"
                     f"📏 Розмір: *{file_size / 1024:.1f} KB*\n"
                     f"📅 Змінено: `{mtime_str}`\n"
                     f"⚠️ Індекс не створювався через завантаження"
@@ -225,12 +227,15 @@ async def kb_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 status_text = "ℹ️ CSV файл не знайдено. Завантажте файл через 'Завантажити CSV'."
         else:
-            # Форматирование статуса из метаданных
-            csv_name = os.path.basename(meta.get("csv_path", ""))
+            csv_path = meta.get("csv_path", "")
+            if csv_path and os.path.exists(csv_path):
+                csv_name = os.path.basename(csv_path)
+            else:
+                csv_name = os.path.basename(settings.CSV_FILE_PATH)
+            
             row_count = meta.get("row_count", 0)
             built_at = meta.get("built_at", "невідомо")
             csv_mtime = meta.get("csv_mtime", "невідомо")
-            checksum = str(meta.get("checksum", ""))[:12] + "..." if meta.get("checksum") else "невідомо"
             
             status_text = (
                 "📚 *Статус бази знань*\n\n"
@@ -439,6 +444,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Failed to send response: {e}")
             await update.message.reply_text(response)
+            
+        if settings.DEBUG_CONTEXT_TRIM_NOTIFY:
+            try:
+                trimmed = await knowledge_service.get_and_clear_trim_count(session_id)
+            except (AttributeError, TypeError):
+                trimmed = 0
+            if trimmed > 0:
+                note = "⚠️ Контекстне вікно досягло ліміту та було очищено (видалено перші 10 000 слів)"
+                if trimmed > 1:
+                    note += f" ×{trimmed}"
+                await update.message.reply_text(note)
+                
     except Exception as e:
         logger.error(f"Error processing query for user {user_id}: {e}")
         await update.message.reply_text("Вибачте, сталася помилка. Спробуйте ще раз.")
